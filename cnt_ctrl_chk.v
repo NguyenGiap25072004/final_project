@@ -1,45 +1,56 @@
-// Test case for counter control modes (100% Verilog-2001 compatible)
 task run_test();
     reg [31:0] read_val_lo, read_val_hi;
-    reg [63:0] count_before, count_after, count_delta;
-    integer    ticks_to_wait;
-    integer    i;
-    reg [63:0] last_count_val;
+    reg [63:0] count_before, count_after, count_delta, expected_delta;
+    integer    num_cycles;
+    reg [31:0] tcr_val;
+    integer    idx;
 begin
-    $display("\n\n--- Starting Test: Counter Control with Division (Robust) ---");
+    $display("\n\n--- Starting Test: Counter Control with div_val (Robust Check) ---");
 
-    $display("\n[SCENARIO] Testing with div_val = 4. Waiting for 10 counter ticks.");
-    
-    // 1. Reset and configure timer
-    timer_reg_write(TCR_OFFSET, 0);
-    timer_reg_write(TDR0_OFFSET, 0);
-    timer_reg_write(TDR1_OFFSET, 0);
-    timer_reg_write(TCR_OFFSET, (4 << 8) | 3); // div_val=4, div_en=1, timer_en=1
-    
-    // 2. Read initial value
-    timer_reg_read(TDR0_OFFSET, read_val_lo);
-    timer_reg_read(TDR1_OFFSET, read_val_hi);
-    count_before = {read_val_hi, read_val_lo};
-    last_count_val = count_before;
-    
-    // 3. Wait for the counter to increment exactly 10 times
-    ticks_to_wait = 10;
-    for (i = 0; i < ticks_to_wait; i = i + 1) begin
-        // Pure Verilog equivalent of @(posedge clk iff condition)
-        while (u_timer.count2reg == last_count_val) begin
-            @(posedge clk);
+    for (idx = 0; idx < 9; idx = idx + 1) begin
+        num_cycles = 512;
+        
+        $display("[SCENARIO] Testing with div_val = %0d for %0d cycles", idx, num_cycles);
+        
+        // 1. Reset and read counter value BEFORE starting
+        timer_reg_write(TCR_OFFSET, 0); // Ensure timer is off
+        timer_reg_write(TDR0_OFFSET, 0);
+        timer_reg_write(TDR1_OFFSET, 0);
+        timer_reg_read(TDR0_OFFSET, read_val_lo);
+        timer_reg_read(TDR1_OFFSET, read_val_hi);
+        count_before = {read_val_hi, read_val_lo};
+        
+        // 2. Enable timer with division
+        tcr_val = (idx << 8) | (1 << 1) | (1 << 0); // div_val, div_en, timer_en
+        timer_reg_write(TCR_OFFSET, tcr_val);
+
+        // 3. Wait for N cycles
+        #(num_cycles * CLK_PERIOD);
+
+        // 4. Stop timer and read counter value AFTER
+        timer_reg_write(TCR_OFFSET, 0);
+        timer_reg_read(TDR0_OFFSET, read_val_lo);
+        timer_reg_read(TDR1_OFFSET, read_val_hi);
+        count_after = {read_val_hi, read_val_lo};
+
+        // 5. Check the DIFFERENCE
+        count_delta = count_after - count_before;
+        // Expected ticks = total cycles / division_factor. Allow for a small +/- 2 margin due to APB latency.
+        expected_delta = num_cycles / (1 << idx); 
+        
+        if (count_delta >= expected_delta - 2 && count_delta <= expected_delta + 2) begin
+             $display("[CHECK PASSED] @ %0t : div_val=%0d, count delta is within margin (Actual: %0d, Expected: ~%0d)", $time, idx, count_delta, expected_delta);
+        end else begin
+             $display("**************************************************");
+             $display("[CHECK FAILED] @ %0t : div_val=%0d, count delta is out of margin", $time, idx);
+             $display("    -> Count Before = %0d", count_before);
+             $display("    -> Count After  = %0d", count_after);
+             $display("    -> Delta        = %0d", count_delta);
+             $display("    -> Expected ~   = %0d", expected_delta);
+             $display("**************************************************");
+             g_error_count = g_error_count + 1;
         end
-        last_count_val = u_timer.count2reg;
-        $display("[INFO] Tick %0d/%0d detected. Counter value: %0d", i+1, ticks_to_wait, last_count_val);
     end
-    
-    // 4. Stop timer and read final value
-    timer_reg_write(TCR_OFFSET, 0);
-    count_after = last_count_val; // We already have the last value
-
-    // 5. Check if the delta is exactly the number of ticks we waited for
-    count_delta = count_after - count_before;
-    check_value(count_delta, ticks_to_wait, "Check number of increments in division mode");
 
     if (g_error_count == 0) $display("--- TEST PASSED ---");
     else $display("--- TEST FAILED ---");
